@@ -83,31 +83,91 @@ export interface LunarDateVN {
   yearName?: string;
 }
 
+// Epoch: JD of Jan 1, 1900 (same as NewMoon base)
+const LUNAR_EPOCH = 2415021.076998695;
+
+function _getNewMoonDay(k: number, tz: number): number {
+  return Math.floor(NewMoon(k) + 0.5 + tz / 24);
+}
+
+// Find JD of the 11th lunar month start (contains winter solstice) for a given year
+function _getLunarMonth11(yyyy: number, tz: number): number {
+  const off = jdFromDate(31, 12, yyyy) - LUNAR_EPOCH;
+  const k = Math.floor(off / 29.530588853);
+  const nm = _getNewMoonDay(k, tz);
+  // Winter solstice: sun longitude >= 270°
+  return SunLongitude(nm) >= 270 ? _getNewMoonDay(k - 1, tz) : nm;
+}
+
+// Find offset of leap month in a lunar year starting at a11
+function _getLeapMonthOffset(a11: number, tz: number): number {
+  const k = Math.floor((a11 - LUNAR_EPOCH) / 29.530588853 + 0.5);
+  let i = 1;
+  let last = Math.floor(SunLongitude(_getNewMoonDay(k + 1, tz)) / 30);
+  let arc: number;
+  do {
+    i++;
+    arc = Math.floor(SunLongitude(_getNewMoonDay(k + i, tz)) / 30);
+  } while (arc !== last && i < 14);
+  return i - 1;
+}
+
 export function getLunarDate(year: number, month: number, day: number, timeZone: number = 7): LunarDateVN {
-  let jd = jdFromDate(day, month, year);
-  jd = jd + (timeZone - 8) / 24;
-  let k = Math.floor((jd - 2451550.1) / 29.530588861);
-  let newMoon = NewMoon(k);
-  while (newMoon > jd) { k--; newMoon = NewMoon(k); }
-  const newMoonDate = jdToDate(Math.floor(newMoon + 0.5));
-  const lunarYear = newMoonDate[2];
-  const lunarDay = Math.floor(jd - newMoon) + 1;
-  let testK = Math.floor(((lunarYear - 4) * 12.36874) + 0.5);
-  let testNewMoon = NewMoon(testK);
-  const testDate = jdToDate(Math.floor(testNewMoon + 0.5));
-  if (testDate[1] < 1 || (testDate[1] === 1 && testDate[2] < 21) || testDate[1] > 2) {
-    testK++;
-    testNewMoon = NewMoon(testK);
+  const dayNumber = jdFromDate(day, month, year);
+
+  // k = index of new moon relative to Jan 1900 epoch
+  let k = Math.floor((dayNumber - LUNAR_EPOCH) / 29.530588853);
+
+  // Find start of current lunar month (new moon day in local TZ)
+  let monthStart = _getNewMoonDay(k + 1, timeZone);
+  if (monthStart > dayNumber) {
+    monthStart = _getNewMoonDay(k, timeZone);
+  } else {
+    k += 1;
   }
-  const lunarMonth = k - testK + 1;
-  const isLeapMonth = lunarMonth > 12;
+
+  const lunarDay = dayNumber - monthStart + 1;
+
+  // Find 11th lunar month (winter solstice month) for this and adjacent years
+  const a11 = _getLunarMonth11(year, timeZone);
+  let lunarYear: number;
+  let yearStart: number;
+  let yearEnd: number;
+
+  if (a11 >= monthStart) {
+    lunarYear = year;
+    yearStart = _getLunarMonth11(year - 1, timeZone);
+    yearEnd = a11;
+  } else {
+    lunarYear = year + 1;
+    yearStart = a11;
+    yearEnd = _getLunarMonth11(year + 1, timeZone);
+  }
+
+  // Count lunar months from yearStart
+  const diff = Math.floor((monthStart - yearStart) / 29);
+  let lunarMonth = diff + 11;
+  let isLeapMonth = false;
+
+  // Leap year has 13 months
+  if (yearEnd - yearStart > 365) {
+    const leapOff = _getLeapMonthOffset(yearStart, timeZone);
+    if (diff >= leapOff) {
+      lunarMonth = diff + 10;
+      if (diff === leapOff) isLeapMonth = true;
+    }
+  }
+
+  if (lunarMonth > 12) lunarMonth -= 12;
+  if (lunarMonth >= 11 && diff < 4) lunarYear -= 1;
+
   const yearStem = (lunarYear - 4 + 10) % 10;
   const yearBranch = (lunarYear - 4 + 12) % 12;
   const stemNames = ['Giáp','Ất','Bính','Đinh','Mậu','Kỷ','Canh','Tân','Nhâm','Quý'];
   const branchNames = ['Tý','Sửu','Dần','Mão','Thìn','Tỵ','Ngọ','Mùi','Thân','Dậu','Tuất','Hợi'];
   return {
     year: lunarYear,
-    month: isLeapMonth ? -(lunarMonth - 12) : lunarMonth,
+    month: isLeapMonth ? -lunarMonth : lunarMonth,
     day: lunarDay,
     isLeapMonth,
     yearStem,
